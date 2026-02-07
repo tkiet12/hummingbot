@@ -82,7 +82,18 @@ class CandlesFactory:
         :return: Instance of CandleBase or its subclass.
         :raises UnsupportedConnectorException: If the connector is not supported.
         """
-        connector_class = cls._candles_map.get(candles_config.connector)
+        from hummingbot.client.settings import AllConnectorSettings
+
+        connector_name = candles_config.connector
+
+        # Resolve sub-domain connectors to parent connectors
+        # (e.g., binance_testnet -> binance)
+        conn_settings = AllConnectorSettings.get_connector_settings()
+        conn_setting = conn_settings.get(connector_name)
+        if conn_setting and conn_setting.is_sub_domain:
+            connector_name = conn_setting.parent_name
+
+        connector_class = cls._candles_map.get(connector_name)
         if connector_class:
             return connector_class(candles_config.trading_pair, candles_config.interval, candles_config.max_records)
         else:

@@ -14,6 +14,11 @@ RUN conda env create -f /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
 
+# Install pip packages
+COPY setup/pip_packages.txt /tmp/pip_packages.txt
+RUN python3 -m pip install --no-deps -r /tmp/pip_packages.txt && \
+    rm /tmp/pip_packages.txt
+
 # Copy remaining files
 COPY bin/ bin/
 COPY hummingbot/ hummingbot/
@@ -27,11 +32,6 @@ COPY README.md .
 # activate hummingbot env when entering the CT
 SHELL [ "/bin/bash", "-lc" ]
 RUN echo "conda activate hummingbot" >> ~/.bashrc
-
-COPY setup/pip_packages.txt /tmp/pip_packages.txt
-RUN python3 -m pip install --no-deps -r /tmp/pip_packages.txt && \
-    rm /tmp/pip_packages.txt
-
 
 RUN python3 setup.py build_ext --inplace -j 8 && \
     rm -rf build/ && \

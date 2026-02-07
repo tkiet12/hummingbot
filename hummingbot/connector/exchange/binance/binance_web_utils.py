@@ -13,20 +13,31 @@ def public_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> st
     """
     Creates a full URL for provided public REST endpoint
     :param path_url: a public REST endpoint
-    :param domain: the Binance domain to connect to ("com" or "us"). The default value is "com"
+    :param domain: the Binance domain to connect to ("binance" or "binance_testnet"). The default value is "binance"
     :return: the full URL to the endpoint
     """
-    return CONSTANTS.REST_URL.format(domain) + CONSTANTS.PUBLIC_API_VERSION + path_url
+    base_url = CONSTANTS.REST_URLS.get(domain, CONSTANTS.REST_URLS[CONSTANTS.DEFAULT_DOMAIN])
+    return base_url + CONSTANTS.PUBLIC_API_VERSION + path_url
 
 
 def private_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     """
     Creates a full URL for provided private REST endpoint
     :param path_url: a private REST endpoint
-    :param domain: the Binance domain to connect to ("com" or "us"). The default value is "com"
+    :param domain: the Binance domain to connect to ("binance" or "binance_testnet"). The default value is "binance"
     :return: the full URL to the endpoint
     """
-    return CONSTANTS.REST_URL.format(domain) + CONSTANTS.PRIVATE_API_VERSION + path_url
+    base_url = CONSTANTS.REST_URLS.get(domain, CONSTANTS.REST_URLS[CONSTANTS.DEFAULT_DOMAIN])
+    return base_url + CONSTANTS.PRIVATE_API_VERSION + path_url
+
+
+def wss_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    """
+    Creates a WebSocket URL for the given domain
+    :param domain: the Binance domain to connect to ("binance" or "binance_testnet"). The default value is "binance"
+    :return: the WebSocket URL
+    """
+    return CONSTANTS.WSS_URLS.get(domain, CONSTANTS.WSS_URLS[CONSTANTS.DEFAULT_DOMAIN])
 
 
 def build_api_factory(
