@@ -1,6 +1,9 @@
 from decimal import Decimal
 from typing import List, Optional
 
+from typing import List, Optional
+
+import pandas_ta as ta  # noqa: F401
 from pydantic import Field
 
 from hummingbot.core.data_type.common import MarketDict, OrderType, PositionMode, PriceType, TradeType
@@ -42,6 +45,7 @@ class GridStrikeConfig(ControllerConfigBase):
     order_frequency: int = Field(default=3, json_schema_extra={"is_updatable": True})
     activation_bounds: Optional[Decimal] = Field(default=None, json_schema_extra={"is_updatable": True})
     keep_position: bool = Field(default=False, json_schema_extra={"is_updatable": True})
+    deduct_base_fees: bool = Field(default=False, json_schema_extra={"is_updatable": True})
 
     # Risk Management
     triple_barrier_config: TripleBarrierConfig = TripleBarrierConfig(
@@ -50,12 +54,26 @@ class GridStrikeConfig(ControllerConfigBase):
         take_profit_order_type=OrderType.LIMIT_MAKER,
     )
 
+    # Dynamic Parameters
+    dynamic_target: bool = Field(default=False, json_schema_extra={"is_updatable": True})
+    use_bollinger_bands: bool = Field(default=False, json_schema_extra={"is_updatable": True})
+    bb_length: int = Field(default=100, json_schema_extra={"is_updatable": True})
+    bb_std: float = Field(default=2.0, json_schema_extra={"is_updatable": True})
+    interval: str = Field(default="1m", json_schema_extra={"is_updatable": True})
+    grid_range: Optional[Decimal] = Field(default=Decimal("0.02"), json_schema_extra={"is_updatable": True})
+
     def update_markets(self, markets: MarketDict) -> MarketDict:
         return markets.add_or_update(self.connector_name, self.trading_pair)
 
 
 class GridStrike(ControllerBase):
     def __init__(self, config: GridStrikeConfig, *args, **kwargs):
+        config.candles_config = [CandlesConfig(
+            connector=config.connector_name,
+            trading_pair=config.trading_pair,
+            interval=config.interval,
+            max_records=config.bb_length + 100
+        )]
         super().__init__(config, *args, **kwargs)
         self.config = config
         self._last_grid_levels_update = 0
@@ -73,21 +91,45 @@ class GridStrike(ControllerBase):
             if executor.is_active
         ]
 
-    def is_inside_bounds(self, price: Decimal) -> bool:
-        return self.config.start_price <= price <= self.config.end_price
+    def is_inside_bounds(self, price: Decimal, start_price: Decimal, end_price: Decimal) -> bool:
+        return start_price <= price <= end_price
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         mid_price = self.market_data_provider.get_price_by_type(
             self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
-        if len(self.active_executors()) == 0 and self.is_inside_bounds(mid_price):
+
+        # Calculate dynamic parameters
+        start_price = self.config.start_price
+        end_price = self.config.end_price
+        
+        if self.config.dynamic_target:
+            if self.config.use_bollinger_bands:
+                 # Use pre-calculated BB width from processed_data
+                bb_width = self.processed_data.get("bb_width", self.config.grid_range)
+                grid_range = Decimal(str(bb_width))
+            else:
+                grid_range = self.config.grid_range
+
+            # Calculate start and end price centered around mid_price
+            half_range = grid_range / 2
+            start_price = mid_price * (1 - half_range)
+            end_price = mid_price * (1 + half_range)
+
+            # Update limit price based on side
+            if self.config.side == TradeType.BUY:
+                 self.config.limit_price = start_price * (1 - Decimal("0.001")) # slightly below start
+            else:
+                 self.config.limit_price = end_price * (1 + Decimal("0.001")) # slightly above end
+
+        if len(self.active_executors()) == 0 and self.is_inside_bounds(mid_price, start_price, end_price):
             return [CreateExecutorAction(
                 controller_id=self.config.id,
                 executor_config=GridExecutorConfig(
                     timestamp=self.market_data_provider.time(),
                     connector_name=self.config.connector_name,
                     trading_pair=self.config.trading_pair,
-                    start_price=self.config.start_price,
-                    end_price=self.config.end_price,
+                    start_price=start_price,
+                    end_price=end_price,
                     leverage=self.config.leverage,
                     limit_price=self.config.limit_price,
                     side=self.config.side,
@@ -101,11 +143,50 @@ class GridStrike(ControllerBase):
                     triple_barrier_config=self.config.triple_barrier_config,
                     level_id=None,
                     keep_position=self.config.keep_position,
+                    deduct_base_fees=self.config.deduct_base_fees,
                 ))]
         return []
 
     async def update_processed_data(self):
-        pass
+        if self.config.dynamic_target and self.config.use_bollinger_bands:
+            candles = self.market_data_provider.get_candles_df(
+                connector_name=self.config.connector_name,
+                trading_pair=self.config.trading_pair,
+                interval=self.config.interval,
+                max_records=self.config.bb_length + 100
+            )
+            if len(candles) > self.config.bb_length:
+                bb = ta.bbands(candles["close"], length=self.config.bb_length, std=self.config.bb_std)
+                # handle different column names from pandas_ta
+                std_str = f"{self.config.bb_std}"
+                if std_str.endswith(".0"):
+                    std_str = std_str[:-2]
+                
+                potential_cols = [
+                    f"BBB_{self.config.bb_length}_{self.config.bb_std}",
+                    f"BBB_{self.config.bb_length}_{std_str}",
+                    f"BBB_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}",
+                ]
+                
+                found_col = None
+                for col in potential_cols:
+                    if col in bb.columns:
+                        found_col = col
+                        break
+                
+                if not found_col:
+                    prefix = f"BBB_{self.config.bb_length}"
+                    for col in bb.columns:
+                        if col.startswith(prefix):
+                            found_col = col
+                            break
+                            
+                if found_col:
+                     # pandas_ta returns percentage as whole number (e.g. 2.5 for 2.5%), so divide by 100
+                     bb_width = bb[found_col].iloc[-1] / 100
+                     self.processed_data["bb_width"] = bb_width
+                else:
+                    self.logger().error(f"Could not find BBB column. Available columns: {bb.columns}")
 
     def to_format_status(self) -> List[str]:
         status = []
@@ -128,7 +209,24 @@ class GridStrike(ControllerBase):
         config_line2 += " " * padding + "│"
         status.append(config_line2)
         # Third line: Max orders and Inside bounds
-        config_line3 = f"│ Max Orders: {self.config.max_open_orders}   │ Inside bounds: {1 if self.is_inside_bounds(mid_price) else 0}"
+        # Determine current start/end price for display (if no active executor)
+        display_start = self.config.start_price
+        display_end = self.config.end_price
+        if self.config.dynamic_target:
+             # Just show static config or maybe indicate it's dynamic? 
+             # For now keep it simple, or ideally calculate it just for display?
+             # Let's note checking is_inside_bounds will fail if we don't pass correct params in next line
+             pass 
+
+        # We need to recalculate dynamic bounds for display if no active executor is running
+        # But for status we can just show what is configured, or maybe the last calculated values?
+        # Let's just use a simple display check
+        is_inside = False
+        # To avoid complexity in status formatting, let's just check against config for now or handle dynamic logic later
+        # Re-using the logic from determine_executor_actions partly for display is okay but maybe overkill for status
+        # For now, let's just show "Dynamic" if dynamic_target is True for bounds checking
+        
+        config_line3 = f"│ Max Orders: {self.config.max_open_orders}   │ Inside bounds: {'Dynamic' if self.config.dynamic_target else (1 if self.is_inside_bounds(mid_price, display_start, display_end) else 0)}"
         padding = box_width - len(config_line3) + 1  # +1 for correct right border alignment
         config_line3 += " " * padding + "│"
         status.append(config_line3)

@@ -68,6 +68,9 @@ class BinanceExchange(ExchangePyBase):
     def name(self) -> str:
         if self._domain == "com":
             return "binance"
+        elif self._domain.startswith("binance_"):
+            # Domain already includes "binance_" prefix (e.g., binance_testnet)
+            return self._domain
         else:
             return f"binance_{self._domain}"
 

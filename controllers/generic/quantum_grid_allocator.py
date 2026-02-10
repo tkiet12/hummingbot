@@ -97,7 +97,12 @@ class QGAConfig(ControllerConfigBase):
 class QuantumGridAllocator(ControllerBase):
     def __init__(self, config: QGAConfig, *args, **kwargs):
         self.config = config
-        self.metrics = {}
+        self.metrics = {
+            "theoretical": {},
+            "actual": {},
+            "difference": {},
+            "total_portfolio_value": Decimal("0")
+        }
         # Track unfavorable grid IDs
         self.unfavorable_grid_ids = set()
         # Track held positions from unfavorable grids
@@ -129,7 +134,41 @@ class QuantumGridAllocator(ControllerBase):
                 bb_width = self.config.grid_range
             else:
                 bb = ta.bbands(candles["close"], length=self.config.bb_length, std=self.config.bb_std_dev)
-                bb_width = bb[f"BBB_{self.config.bb_length}_{self.config.bb_std_dev}"].iloc[-1] / 100
+                # handle different column names from pandas_ta
+                std_str = f"{self.config.bb_std_dev}"
+                if std_str.endswith(".0"):
+                    std_str = std_str[:-2]
+                
+                # Check for various formats: 
+                # - standard: BBB_{len}_{std}
+                # - no decimal std: BBB_{len}_{int(std)}
+                # - double suffix: BBB_{len}_{std}_{std} (observed in logs)
+                potential_cols = [
+                    f"BBB_{self.config.bb_length}_{self.config.bb_std_dev}",
+                    f"BBB_{self.config.bb_length}_{std_str}",
+                    f"BBB_{self.config.bb_length}_{self.config.bb_std_dev}_{self.config.bb_std_dev}",
+                ]
+                
+                found_col = None
+                for col in potential_cols:
+                    if col in bb.columns:
+                        found_col = col
+                        break
+                
+                # If not found, look for any column starting with prefix
+                if not found_col:
+                    prefix = f"BBB_{self.config.bb_length}"
+                    for col in bb.columns:
+                        if col.startswith(prefix):
+                            found_col = col
+                            break
+                            
+                if found_col:
+                     bb_width = bb[found_col].iloc[-1] / 100
+                else:
+                    # Fallback or log error
+                    self.logger().error(f"Could not find BBB column. Available columns: {bb.columns}")
+                    bb_width = self.config.grid_range
             self.processed_data[trading_pair] = {
                 "bb_width": bb_width
             }
@@ -187,85 +226,87 @@ class QuantumGridAllocator(ControllerBase):
                 active_grids[asset] = active_executors
         return active_grids
 
-    def to_format_status(self) -> List[str]:
-        """Generate a detailed status report with portfolio, grid, and position information"""
-        status_lines = []
-        total_value = self.metrics.get("total_portfolio_value", Decimal("0"))
-        # Portfolio Status
-        status_lines.append(f"Total Portfolio Value: ${total_value:,.2f}")
-        status_lines.append("")
-        status_lines.append("Portfolio Status:")
-        status_lines.append("-" * 80)
-        status_lines.append(
-            f"{'Asset':<8} | "
-            f"{'Actual':>10} | "
-            f"{'Target':>10} | "
-            f"{'Diff':>10} | "
-            f"{'Dev %':>8}"
-        )
-        status_lines.append("-" * 80)
-        # Show metrics for each asset
-        for asset in self.config.portfolio_allocation:
-            actual = self.metrics["actual"].get(asset, Decimal("0"))
-            theoretical = self.metrics["theoretical"].get(asset, Decimal("0"))
-            difference = self.metrics["difference"].get(asset, Decimal("0"))
-            deviation_pct = (difference / theoretical * 100) if theoretical != Decimal("0") else Decimal("0")
+        try:
+            status_lines = []
+            total_value = self.metrics.get("total_portfolio_value", Decimal("0"))
+            # Portfolio Status
+            status_lines.append(f"Total Portfolio Value: ${total_value:,.2f}")
+            status_lines.append("")
+            status_lines.append("Portfolio Status:")
+            status_lines.append("-" * 80)
             status_lines.append(
-                f"{asset:<8} | "
+                f"{'Asset':<8} | "
+                f"{'Actual':>10} | "
+                f"{'Target':>10} | "
+                f"{'Diff':>10} | "
+                f"{'Dev %':>8}"
+            )
+            status_lines.append("-" * 80)
+            # Show metrics for each asset
+            for asset in self.config.portfolio_allocation:
+                actual = self.metrics["actual"].get(asset, Decimal("0"))
+                theoretical = self.metrics["theoretical"].get(asset, Decimal("0"))
+                difference = self.metrics["difference"].get(asset, Decimal("0"))
+                deviation_pct = (difference / theoretical * 100) if theoretical != Decimal("0") else Decimal("0")
+                status_lines.append(
+                    f"{asset:<8} | "
+                    f"${actual:>9.2f} | "
+                    f"${theoretical:>9.2f} | "
+                    f"${difference:>+9.2f} | "
+                    f"{deviation_pct:>+7.1f}%"
+                )
+            # Add quote asset metrics
+            quote_asset = self.config.quote_asset
+            actual = self.metrics["actual"].get(quote_asset, Decimal("0"))
+            theoretical = self.metrics["theoretical"].get(quote_asset, Decimal("0"))
+            difference = self.metrics["difference"].get(quote_asset, Decimal("0"))
+            deviation_pct = (difference / theoretical * 100) if theoretical != Decimal("0") else Decimal("0")
+            status_lines.append("-" * 80)
+            status_lines.append(
+                f"{quote_asset:<8} | "
                 f"${actual:>9.2f} | "
                 f"${theoretical:>9.2f} | "
                 f"${difference:>+9.2f} | "
                 f"{deviation_pct:>+7.1f}%"
             )
-        # Add quote asset metrics
-        quote_asset = self.config.quote_asset
-        actual = self.metrics["actual"].get(quote_asset, Decimal("0"))
-        theoretical = self.metrics["theoretical"].get(quote_asset, Decimal("0"))
-        difference = self.metrics["difference"].get(quote_asset, Decimal("0"))
-        deviation_pct = (difference / theoretical * 100) if theoretical != Decimal("0") else Decimal("0")
-        status_lines.append("-" * 80)
-        status_lines.append(
-            f"{quote_asset:<8} | "
-            f"${actual:>9.2f} | "
-            f"${theoretical:>9.2f} | "
-            f"${difference:>+9.2f} | "
-            f"{deviation_pct:>+7.1f}%"
-        )
-        # Active Grids Summary
-        active_grids = self.get_active_grids_by_asset()
-        if active_grids:
-            status_lines.append("")
-            status_lines.append("Active Grids:")
-            status_lines.append("-" * 140)
-            status_lines.append(
-                f"{'Asset':<8} {'Side':<6} | "
-                f"{'Total ($)':<10} {'Position':<10} {'Volume':<10} | "
-                f"{'PnL':<10} {'RPnL':<10} {'Fees':<10} | "
-                f"{'Start':<10} {'Current':<10} {'End':<10} {'Limit':<10}"
-            )
-            status_lines.append("-" * 140)
-            for asset, executors in active_grids.items():
-                for executor in executors:
-                    config = executor.config
-                    custom_info = executor.custom_info
-                    trading_pair = config.trading_pair
-                    current_price = self.get_mid_price(trading_pair)
-                    # Get grid metrics
-                    total_amount = Decimal(str(config.total_amount_quote))
-                    position_size = Decimal(str(custom_info.get('position_size_quote', '0')))
-                    volume = executor.filled_amount_quote
-                    pnl = executor.net_pnl_quote
-                    realized_pnl_quote = custom_info.get('realized_pnl_quote', Decimal('0'))
-                    fees = executor.cum_fees_quote
-                    status_lines.append(
-                        f"{asset:<8} {config.side.name:<6} | "
-                        f"${total_amount:<9.2f} ${position_size:<9.2f} ${volume:<9.2f} | "
-                        f"${pnl:>+9.2f} ${realized_pnl_quote:>+9.2f} ${fees:>9.2f} | "
-                        f"{config.start_price:<10.4f} {current_price:<10.4f} {config.end_price:<10.4f} {config.limit_price:<10.4f}"
-                    )
+            # Active Grids Summary
+            active_grids = self.get_active_grids_by_asset()
+            if active_grids:
+                status_lines.append("")
+                status_lines.append("Active Grids:")
+                status_lines.append("-" * 140)
+                status_lines.append(
+                    f"{'Asset':<8} {'Side':<6} | "
+                    f"{'Total ($)':<10} {'Position':<10} {'Volume':<10} | "
+                    f"{'PnL':<10} {'RPnL':<10} {'Fees':<10} | "
+                    f"{'Start':<10} {'Current':<10} {'End':<10} {'Limit':<10}"
+                )
+                status_lines.append("-" * 140)
+                for asset, executors in active_grids.items():
+                    for executor in executors:
+                        config = executor.config
+                        custom_info = executor.custom_info
+                        trading_pair = config.trading_pair
+                        current_price = self.get_mid_price(trading_pair)
+                        # Get grid metrics
+                        total_amount = Decimal(str(config.total_amount_quote))
+                        position_size = Decimal(str(custom_info.get('position_size_quote', '0')))
+                        volume = executor.filled_amount_quote
+                        pnl = executor.net_pnl_quote
+                        realized_pnl_quote = custom_info.get('realized_pnl_quote', Decimal('0'))
+                        fees = executor.cum_fees_quote
+                        status_lines.append(
+                            f"{asset:<8} {config.side.name:<6} | "
+                            f"${total_amount:<9.2f} ${position_size:<9.2f} ${volume:<9.2f} | "
+                            f"${pnl:>+9.2f} ${realized_pnl_quote:>+9.2f} ${fees:>9.2f} | "
+                            f"{config.start_price:<10.4f} {current_price:<10.4f} {config.end_price:<10.4f} {config.limit_price:<10.4f}"
+                        )
 
-        status_lines.append("-" * 100 + "\n")
-        return status_lines
+            status_lines.append("-" * 100 + "\n")
+            return status_lines
+        except Exception as e:
+            self.logger().error(f"Error formatting status: {e}", exc_info=True)
+            return [f"Error formatting status: {e}"]
 
     def tp_multiplier(self):
         return self.config.tp_sl_ratio
