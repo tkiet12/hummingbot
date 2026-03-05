@@ -40,6 +40,15 @@ def wss_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     return CONSTANTS.WSS_URLS.get(domain, CONSTANTS.WSS_URLS[CONSTANTS.DEFAULT_DOMAIN])
 
 
+def ws_api_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    """
+    Creates a WebSocket API URL for the given domain
+    :param domain: the Binance domain to connect to ("binance" or "binance_testnet"). The default value is "binance"
+    :return: the WebSocket API URL
+    """
+    return CONSTANTS.WS_API_URLS.get(domain, CONSTANTS.WS_API_URLS[CONSTANTS.DEFAULT_DOMAIN])
+
+
 def build_api_factory(
         throttler: Optional[AsyncThrottler] = None,
         time_synchronizer: Optional[TimeSynchronizer] = None,

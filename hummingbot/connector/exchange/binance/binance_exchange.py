@@ -552,3 +552,45 @@ class BinanceExchange(ExchangePyBase):
         )
 
         return float(resp_json["lastPrice"])
+
+    async def _api_request(
+            self,
+            path_url,
+            overwrite_url: Optional[str] = None,
+            method: RESTMethod = RESTMethod.GET,
+            params: Optional[Dict[str, Any]] = None,
+            data: Optional[Dict[str, Any]] = None,
+            is_auth_required: bool = False,
+            return_err: bool = False,
+            limit_id: Optional[str] = None,
+            headers: Optional[Dict[str, Any]] = None,
+            **kwargs,
+    ) -> Dict[str, Any]:
+
+        last_exception = None
+        rest_assistant = await self._web_assistants_factory.get_rest_assistant()
+        url = overwrite_url or await self._api_request_url(path_url=path_url, is_auth_required=is_auth_required)
+
+        # Re-implemented to increase retry count
+        for _ in range(4):
+            try:
+                request_result = await rest_assistant.execute_request(
+                    url=url,
+                    params=params,
+                    data=data,
+                    method=method,
+                    is_auth_required=is_auth_required,
+                    return_err=return_err,
+                    throttler_limit_id=limit_id if limit_id else path_url,
+                    headers=headers,
+                )
+                return request_result
+            except IOError as request_exception:
+                last_exception = request_exception
+                if self._is_request_exception_related_to_time_synchronizer(request_exception=request_exception):
+                    await self._update_time_synchronizer()
+                else:
+                    raise
+
+        # Failed even after the last retry
+        raise last_exception
