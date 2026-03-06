@@ -26,8 +26,8 @@ WSS_API_URLS = {
 
 WS_API_URLS = {
     "binance": "wss://ws-api.binance.com:443/ws-api/v3",
-    "binance_testnet": "wss://ws-api.testnet.binance.vision/ws-api/v3",
-    "testnet": "wss://ws-api.testnet.binance.vision/ws-api/v3",
+    "binance_testnet": "wss://demo-ws-api.binance.com/ws-api/v3",
+    "testnet": "wss://demo-ws-api.binance.com/ws-api/v3",
 }
 
 PUBLIC_API_VERSION = "v3"

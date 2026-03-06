@@ -18,8 +18,8 @@ services:
       - ./scripts:/home/hummingbot/scripts
       - ./controllers:/home/hummingbot/controllers
       # Mount source code for hot-reloading
-      # - ./hummingbot:/home/hummingbot/hummingbot
-      # - ./bin:/home/hummingbot/bin
+      #- ./hummingbot:/home/hummingbot/hummingbot
+      #- ./bin:/home/hummingbot/bin
     logging:
       driver: "json-file"
       options:

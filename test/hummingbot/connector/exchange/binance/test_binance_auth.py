@@ -49,3 +49,32 @@ class BinanceAuthTests(TestCase):
         self.assertEqual(now * 1e3, configured_request.params["timestamp"])
         self.assertEqual(expected_signature, configured_request.params["signature"])
         self.assertEqual({"X-MBX-APIKEY": self._api_key}, configured_request.headers)
+
+    def test_rest_authenticate_ed25519(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        import base64
+
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        pem_private_key = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode("utf-8")
+
+        now = 1234567890.000
+        mock_time_provider = MagicMock()
+        mock_time_provider.time.return_value = now
+
+        params = {
+            "symbol": "LTCBTC",
+        }
+        auth = BinanceAuth(api_key=self._api_key, secret_key=pem_private_key, time_provider=mock_time_provider)
+        request = RESTRequest(method=RESTMethod.GET, params=params, is_auth_required=True)
+        configured_request = self.async_run_with_timeout(auth.rest_authenticate(request))
+
+        expected_msg = f"symbol=LTCBTC&timestamp=1234567890000".encode("utf-8")
+        expected_signature = base64.b64encode(private_key.sign(expected_msg)).decode("utf-8")
+
+        self.assertEqual(expected_signature, configured_request.params["signature"])
+        self.assertEqual({"X-MBX-APIKEY": self._api_key}, configured_request.headers)

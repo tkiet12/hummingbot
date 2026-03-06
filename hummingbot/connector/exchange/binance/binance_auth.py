@@ -1,9 +1,13 @@
+import base64
 import hashlib
 import hmac
 import json
 from collections import OrderedDict
 from typing import Any, Dict
 from urllib.parse import urlencode
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.core.web_assistant.auth import AuthBase
@@ -15,6 +19,20 @@ class BinanceAuth(AuthBase):
         self.api_key = api_key
         self.secret_key = secret_key
         self.time_provider = time_provider
+        self._is_ed25519 = False
+        self._private_key = None
+
+        if "-----BEGIN" in secret_key:
+            try:
+                self._private_key = serialization.load_pem_private_key(
+                    secret_key.encode("utf-8"),
+                    password=None
+                )
+                if isinstance(self._private_key, ed25519.Ed25519PrivateKey):
+                    self._is_ed25519 = True
+            except Exception:
+                # Fallback to HMAC if parsing fails or key is not ED25519
+                pass
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
         """
@@ -82,7 +100,32 @@ class BinanceAuth(AuthBase):
         return params
 
     def _generate_signature(self, params: Dict[str, Any]) -> str:
+        """Signature for REST API requests.
 
+        REST API: sign params in insertion order (as passed), do NOT sort.
+        Per Binance REST docs: the payload is the query string / request body
+        exactly as constructed, without any alphabetical reordering.
+        """
         encoded_params_str = urlencode(params)
-        digest = hmac.new(self.secret_key.encode("utf8"), encoded_params_str.encode("utf8"), hashlib.sha256).hexdigest()
-        return digest
+        if self._is_ed25519:
+            signature = self._private_key.sign(encoded_params_str.encode("utf-8"))
+            return base64.b64encode(signature).decode("utf-8")
+        else:
+            digest = hmac.new(self.secret_key.encode("utf8"), encoded_params_str.encode("utf8"), hashlib.sha256).hexdigest()
+            return digest
+
+    def _generate_ws_signature(self, params: Dict[str, Any]) -> str:
+        """Signature for WebSocket API requests.
+
+        WS API (Ed25519): sort all params alphabetically, then encode as
+        'key=value' pairs joined with '&' and sign.
+        Per Binance WS API docs: Step 1 – sort params alphabetically.
+        """
+        sorted_params = sorted(params.items())
+        encoded_params_str = urlencode(sorted_params)
+        if self._is_ed25519:
+            signature = self._private_key.sign(encoded_params_str.encode("utf-8"))
+            return base64.b64encode(signature).decode("utf-8")
+        else:
+            digest = hmac.new(self.secret_key.encode("utf8"), encoded_params_str.encode("utf8"), hashlib.sha256).hexdigest()
+            return digest
